@@ -705,13 +705,16 @@ impl Pen {
 
 /// Use the lower third of letter gaps, not word gaps. A pair of isolated labels is not
 /// evidence of tracking; unadjusted neighbours inside a string contribute zero too.
-fn typical_tracking(gaps: &mut [f64]) -> f64 {
+/// The tracking a run of glyphs was set with: the lower third of its gaps, when that is at
+/// most half an em (`limit`). A wider "tracking" is word or cell spacing between one-glyph
+/// words (`a b c`, a column of digits or Y/N ticks), which must keep its spaces.
+fn typical_tracking(gaps: &mut [f64], limit: f64) -> f64 {
     if gaps.len() < 3 {
         return 0.0;
     }
     let at = gaps.len() / 3;
     gaps.select_nth_unstable_by(at, f64::total_cmp);
-    gaps.get(at).copied().filter(|n| n.is_finite()).unwrap_or(0.0).max(0.0)
+    gaps.get(at).copied().filter(|n| n.is_finite() && *n <= limit).unwrap_or(0.0).max(0.0)
 }
 
 fn tj_tracking(pieces: &[Object], metrics: &Metrics, size: f64, scale: f64) -> f64 {
@@ -732,7 +735,7 @@ fn tj_tracking(pieces: &[Object], metrics: &Metrics, size: f64, scale: f64) -> f
             gap += -n / 1000.0 * size * scale;
         }
     }
-    typical_tracking(&mut gaps)
+    typical_tracking(&mut gaps, size * scale.abs() * 0.5)
 }
 
 fn positioned_tracking(shown: &mut [Shown]) {
@@ -761,7 +764,8 @@ fn positioned_tracking(shown: &mut [Shown]) {
                     (!prev.text.trim().is_empty() && !next.text.trim().is_empty()).then(|| Pen::after(prev).continues(next, 0.0).1)
                 })
                 .collect();
-            let tracking = typical_tracking(&mut gaps);
+            let limit = run.first().map_or(0.0, |s| s.size * s.state.scale.abs() * 0.5);
+            let tracking = typical_tracking(&mut gaps, limit);
             for s in run.iter_mut().skip(1) {
                 s.tracking = tracking;
             }

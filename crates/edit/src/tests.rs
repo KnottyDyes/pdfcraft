@@ -942,6 +942,23 @@ fn tracked_text_keeps_words_in_paragraphs_and_objects() {
 }
 
 #[test]
+fn single_glyph_words_and_cells_are_not_tracking() {
+    for (content, expected) in [
+        ("BT /F1 10 Tf 72 700 Td [(a) -1000 (b) -1000 (c) -1000 (d)] TJ ET", "a b c d"),
+        ("BT /F1 10 Tf 72 700 Td [(1) -2500 (2) -2500 (3) -2500 (4) -2500 (5)] TJ ET", "1 2 3 4 5"),
+        ("BT /F1 10 Tf 72 700 Td [(A) -300 (B) -1200 (C) -1200 (D) -1200 (E) -300 (F) -1200 (G)] TJ ET", "A B C D E F G"),
+    ] {
+        assert_eq!(text::text_blocks(&text_page(content), 0).unwrap()[0].text, expected, "{content}");
+    }
+    let mut s = String::from("BT /F1 10 Tf ");
+    for (i, c) in "12345".chars().enumerate() {
+        s.push_str(&format!("1 0 0 1 {} 700 Tm ({c}) Tj ", 72 + i * 12));
+    }
+    s.push_str("ET");
+    assert_eq!(text::text_blocks(&text_page(&s), 0).unwrap()[0].text, "1 2 3 4 5");
+}
+
+#[test]
 fn tracked_text_preserves_larger_word_gaps() {
     for show in [
         "[(T) -300 (E) -300 (S) -300 (T) -600 (W) -300 (O) -300 (R) -300 (D)] TJ",
