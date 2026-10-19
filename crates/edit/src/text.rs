@@ -27,6 +27,11 @@ mod session;
 use regions::{group_blocks, is_centred, rewrite_styled_block};
 pub use session::TextSession;
 
+#[path = "text_containers.rs"]
+mod containers;
+#[path = "text_row_style.rs"]
+mod row_style;
+
 /// One line of existing text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextLine {
@@ -67,6 +72,7 @@ pub struct TextLine {
     scope: Option<usize>,
     /// The layers and graphics state parameters it is drawn in; see [`Paint`].
     paint: Paint,
+    containers: Vec<usize>,
     /// Right-to-left `/ActualText` already supplies typing order; glyph text still needs bidi
     /// recovery. Left-to-right ActualText (e.g. a Latin ligature) joins its line as usual.
     logical_order: bool,
@@ -773,6 +779,7 @@ struct Shown {
     decodable: bool,
     scope: Option<usize>,
     paint: Paint,
+    containers: Vec<usize>,
     logical_order: bool,
     actual_text: bool,
 }
@@ -905,6 +912,7 @@ struct Carry {
     layers: Vec<Option<Vec<u8>>>,
     /// Bytes of glyph text the rest of the page may still produce (see [`MAX_PAGE_TEXT`]).
     text_left: usize,
+    containers: Rc<containers::Containers>,
 }
 
 /// The most glyph text one page's extraction produces, in bytes. A ToUnicode destination is
@@ -930,7 +938,7 @@ impl Carry {
             vertical: None,
             unreadable: None,
         };
-        Carry { ts, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT }
+        Carry { ts, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT, containers: Rc::default() }
     }
 }
 
@@ -1289,6 +1297,7 @@ fn interpret(
                     decodable,
                     scope: marked.last().copied().flatten(),
                     paint: Paint { layers: layers.iter().flatten().cloned().collect(), gs: ts.gs.clone() },
+                    containers: Vec::new(),
                     logical_order: false,
                     actual_text: false,
                 });
@@ -1301,6 +1310,9 @@ fn interpret(
     carry.marked = marked;
     carry.layers = layers;
     positioned_tracking(&mut out);
+    for shown in &mut out {
+        shown.containers = carry.containers.membership(shown.rect);
+    }
     Ok(out)
 }
 
@@ -1328,6 +1340,7 @@ fn text_lines_in(doc: &Document, p: &pdfcraft_model::Page, actual_text: bool) ->
     let pieces = Pieces::join(&content_streams(doc, &p.dict)?.into_iter().map(|(_, d)| d).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
     let properties = res.get(b"Properties").and_then(|o| doc.dict(o)).unwrap_or_default();
+    carry.containers = Rc::new(containers::Containers::collect(doc, &ops, &res));
     let shown = interpret(doc, &ops, &res, &mut cache, &mut carry, None, actual_text.then_some(&properties))?;
     let mut last: Option<(usize, Pen)> = None; // the stream piece and where its last run ended
     for mut s in shown {
@@ -1346,7 +1359,9 @@ fn text_lines_in(doc: &Document, p: &pdfcraft_model::Page, actual_text: bool) ->
             let bt = pen.bt;
             let (near, gap) = pen.continues(&s, if bt == s.bt { 3.0 } else { 1.5 });
             piece == si
-                && lines.last().is_some_and(|l| l.scope == s.scope && l.paint == s.paint && l.logical_order == s.logical_order)
+                && lines.last().is_some_and(|l| {
+                    l.scope == s.scope && l.paint == s.paint && l.containers == s.containers && l.logical_order == s.logical_order
+                })
                 && (bt == s.bt || lines.last().is_some_and(|l| compatible_word(l, &s)))
                 && (s.text.trim().is_empty() || lines.last().is_some_and(|l| same_font(l, &s.font, &s.base_font, s.face.as_deref())))
                 && (s.text.trim().is_empty()
@@ -1395,6 +1410,7 @@ fn text_lines_in(doc: &Document, p: &pdfcraft_model::Page, actual_text: bool) ->
                 stream: si,
                 scope: s.scope,
                 paint: s.paint.clone(),
+                containers: s.containers.clone(),
                 logical_order: s.logical_order,
                 actual_text: s.actual_text,
                 clips: s.state.render_mode >= 4,
@@ -1452,7 +1468,7 @@ fn compatible_word(line: &TextLine, shown: &Shown) -> bool {
 fn add_shown(lines: &mut Vec<TextLine>, last: &mut Option<Pen>, s: Shown, stream: usize) {
     let joins = last.is_some_and(|pen| {
         let bt = pen.bt;
-        lines.last().is_some_and(|l| l.scope == s.scope && l.paint == s.paint && l.logical_order == s.logical_order)
+        lines.last().is_some_and(|l| l.scope == s.scope && l.paint == s.paint && l.containers == s.containers && l.logical_order == s.logical_order)
             && (bt == s.bt || lines.last().is_some_and(|l| compatible_word(l, &s)))
             && (s.text.trim().is_empty() || lines.last().is_some_and(|l| same_font(l, &s.font, &s.base_font, s.face.as_deref())))
             && (s.text.trim().is_empty()
@@ -1497,6 +1513,7 @@ fn add_shown(lines: &mut Vec<TextLine>, last: &mut Option<Pen>, s: Shown, stream
             stream,
             scope: s.scope,
             paint: s.paint.clone(),
+            containers: s.containers.clone(),
             logical_order: s.logical_order,
             actual_text: s.actual_text,
             clips: s.state.render_mode >= 4,
@@ -1630,7 +1647,7 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
         let mut forms = invoked.into_iter().peekable();
         for s in shown {
             while let Some((_, name, ts)) = forms.next_if(|f| f.0 < s.op) {
-                enter(w, resources, &name, ts, &mut carry.text_left)?;
+                enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone())?;
                 // Text after a form starts a new line.
                 last = None;
             }
@@ -1642,16 +1659,24 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
             add_shown(&mut w.lines, &mut last, s, si);
         }
         for (_, name, ts) in forms {
-            enter(w, resources, &name, ts, &mut carry.text_left)?;
+            enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone())?;
         }
         Ok(())
     }
     /// `text_left`: the page's text budget, shared with the forms the page draws.
-    fn enter(w: &mut Walk, resources: &Dict, name: &[u8], ts: Ts, text_left: &mut usize) -> Result<(), EditError> {
+    fn enter(
+        w: &mut Walk,
+        resources: &Dict,
+        name: &[u8],
+        ts: Ts,
+        text_left: &mut usize,
+        containers: Rc<containers::Containers>,
+    ) -> Result<(), EditError> {
         let Some(form) = form_call(w.doc, resources, name, ts.ctm, &w.path, &mut w.budget) else { return Ok(()) };
         let ops = parse(&form.data).ops;
         // The form starts with the graphics state at its `Do`, its own matrix applied.
-        let mut carry = Carry { ts: Ts { ctm: form.ctm, ..ts }, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: *text_left };
+        let mut carry =
+            Carry { ts: Ts { ctm: form.ctm, ..ts }, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: *text_left, containers };
         let stream = w.next_stream;
         w.next_stream = w.next_stream.saturating_add(1);
         if let Some(r) = form.obj {
@@ -1677,6 +1702,7 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
     let pieces = Pieces::join(&streams.into_iter().map(|(_, data)| data).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
     let stream_of = |i: usize| ops.get(i).map_or(0, |op| pieces.pieces_of(op).0);
+    carry.containers = Rc::new(containers::Containers::collect(doc, &ops, &res));
     walk(&mut w, &ops, &res, &mut carry, &stream_of)?;
     let mut lines = w.lines;
     // A visual-order Indic font draws pre-base vowel signs before their consonant.
