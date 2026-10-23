@@ -1315,6 +1315,12 @@ fn interpret(
     for shown in &mut out {
         shown.containers = carry.containers.membership(shown.rect, &[carry.at.as_slice(), &[shown.op]].concat());
     }
+    // A box a highlight's height that does not reach across the text is a highlight behind part
+    // of it, as when one `Tj` draws the whole line.
+    for shown in &mut out {
+        let rect = shown.rect;
+        shown.containers.retain(|panel| carry.containers.spans(*panel, rect) || !carry.containers.hugs(*panel, rect));
+    }
     // Text that runs on along its line keeps a box only part of it is in when the box is a
     // panel's height: a highlight padded around one word of the line is not a panel.
     let mut start = 0;
