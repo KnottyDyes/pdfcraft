@@ -913,6 +913,8 @@ struct Carry {
     /// Bytes of glyph text the rest of the page may still produce (see [`MAX_PAGE_TEXT`]).
     text_left: usize,
     containers: Rc<containers::Containers>,
+    /// The operator indices of the `Do`s, from the page down, that draw these operators.
+    at: Vec<usize>,
 }
 
 /// The most glyph text one page's extraction produces, in bytes. A ToUnicode destination is
@@ -938,7 +940,7 @@ impl Carry {
             vertical: None,
             unreadable: None,
         };
-        Carry { ts, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT, containers: Rc::default() }
+        Carry { ts, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: MAX_PAGE_TEXT, containers: Rc::default(), at: Vec::new() }
     }
 }
 
@@ -1311,7 +1313,7 @@ fn interpret(
     carry.layers = layers;
     positioned_tracking(&mut out);
     for shown in &mut out {
-        shown.containers = carry.containers.membership(shown.rect);
+        shown.containers = carry.containers.membership(shown.rect, &[carry.at.as_slice(), &[shown.op]].concat());
     }
     Ok(out)
 }
@@ -1646,8 +1648,8 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
         let mut last_stream = None;
         let mut forms = invoked.into_iter().peekable();
         for s in shown {
-            while let Some((_, name, ts)) = forms.next_if(|f| f.0 < s.op) {
-                enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone())?;
+            while let Some((i, name, ts)) = forms.next_if(|f| f.0 < s.op) {
+                enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone(), [carry.at.as_slice(), &[i]].concat())?;
                 // Text after a form starts a new line.
                 last = None;
             }
@@ -1658,8 +1660,8 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
             }
             add_shown(&mut w.lines, &mut last, s, si);
         }
-        for (_, name, ts) in forms {
-            enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone())?;
+        for (i, name, ts) in forms {
+            enter(w, resources, &name, ts, &mut carry.text_left, carry.containers.clone(), [carry.at.as_slice(), &[i]].concat())?;
         }
         Ok(())
     }
@@ -1671,12 +1673,20 @@ fn reading_lines(doc: &Document, page: usize) -> Result<(Vec<TextLine>, bool), E
         ts: Ts,
         text_left: &mut usize,
         containers: Rc<containers::Containers>,
+        at: Vec<usize>,
     ) -> Result<(), EditError> {
         let Some(form) = form_call(w.doc, resources, name, ts.ctm, &w.path, &mut w.budget) else { return Ok(()) };
         let ops = parse(&form.data).ops;
         // The form starts with the graphics state at its `Do`, its own matrix applied.
-        let mut carry =
-            Carry { ts: Ts { ctm: form.ctm, ..ts }, stack: Vec::new(), marked: Vec::new(), layers: Vec::new(), text_left: *text_left, containers };
+        let mut carry = Carry {
+            ts: Ts { ctm: form.ctm, ..ts },
+            stack: Vec::new(),
+            marked: Vec::new(),
+            layers: Vec::new(),
+            text_left: *text_left,
+            containers,
+            at,
+        };
         let stream = w.next_stream;
         w.next_stream = w.next_stream.saturating_add(1);
         if let Some(r) = form.obj {

@@ -151,6 +151,28 @@ fn joins_multiline_when_inside_the_same_filled_container() {
 }
 
 #[test]
+fn joins_rows_when_a_fill_is_painted_over_one_of_them() {
+    // A box painted after the text covers it (a redaction); it is not a panel behind the text.
+    let doc = page("BT /F1 12 Tf 72 700 Td (First) Tj 0 -18 Td (Second) Tj ET 0 g 70 696 60 20 re f", "Helvetica");
+
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+
+    assert_eq!(blocks.iter().map(|b| b.editor_text.as_str()).collect::<Vec<_>>(), ["First\nSecond"]);
+}
+
+#[test]
+fn joins_rows_when_their_panel_is_repainted_behind_each_row() {
+    let doc = page(
+        "0.9 g 60 650 200 65 re f BT /F1 12 Tf 0 g 72 700 Td (First) Tj ET 0.9 g 60 650 200 65 re f BT /F1 12 Tf 0 g 72 682 Td (Second) Tj ET",
+        "Helvetica",
+    );
+
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+
+    assert_eq!(blocks.iter().map(|b| b.editor_text.as_str()).collect::<Vec<_>>(), ["First\nSecond"]);
+}
+
+#[test]
 fn joins_plain_multiline_when_no_container_exists() {
     let doc = page("BT /F1 12 Tf 72 700 Td (First) Tj 0 -18 Td (Second) Tj ET", "Helvetica");
 

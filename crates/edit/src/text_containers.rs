@@ -6,6 +6,13 @@ use pdfcraft_cos::{Dict, Document, ObjRef};
 struct Container {
     inverse: Matrix,
     rect: [f64; 4],
+    /// Where it is painted in the page's drawing order (see [`Containers::membership`]).
+    at: Vec<usize>,
+    /// Its bounding box on the page, whatever matrix drew it.
+    page: [f64; 4],
+    /// The first container with the same box on the page: a panel painted again behind each of
+    /// its rows, under any matrix, is still one panel.
+    id: usize,
 }
 
 #[derive(Default)]
@@ -19,11 +26,16 @@ impl Containers {
     pub(super) fn collect(doc: &Document, ops: &[Op], resources: &Dict) -> Self {
         let mut collector =
             Collector { doc, containers: Self::default(), path: Vec::new(), budget: super::FormBudget::new(pdfcraft_cos::DecodeBudget::page()) };
-        collector.walk(ops, resources, Matrix::IDENTITY);
+        collector.walk(ops, resources, Matrix::IDENTITY, &[]);
+        let mut first = std::collections::HashMap::new();
+        for (index, container) in collector.containers.filled.iter_mut().enumerate() {
+            let key = container.page.map(|v| (v * 1000.0).round() as i64);
+            container.id = *first.entry(key).or_insert(index);
+        }
         collector.containers
     }
 
-    fn observe(&mut self, op: &Op, ctm: Matrix) {
+    fn observe(&mut self, op: &Op, ctm: Matrix, at: &[usize]) {
         match op.op.as_slice() {
             b"re" => {
                 if self.pending.is_some() {
@@ -31,15 +43,22 @@ impl Containers {
                 }
                 self.pending = op.nums::<4>().zip(ctm.invert()).and_then(|([x, y, width, height], inverse)| {
                     let rect = [x.min(x + width), y.min(y + height), x.max(x + width), y.max(y + height)];
-                    (rect.iter().all(|v| v.is_finite()) && rect[2] > rect[0] && rect[3] > rect[1]).then_some(Container { inverse, rect })
+                    (rect.iter().all(|v| v.is_finite()) && rect[2] > rect[0] && rect[3] > rect[1]).then_some(Container {
+                        inverse,
+                        rect,
+                        at: Vec::new(),
+                        page: page_box(rect, ctm),
+                        id: 0,
+                    })
                 });
             }
             b"m" | b"l" | b"c" | b"v" | b"y" => self.complex = true,
             b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => {
                 if !self.complex
                     && self.filled.len() < 4096
-                    && let Some(rect) = self.pending.take()
+                    && let Some(mut rect) = self.pending.take()
                 {
+                    rect.at = at.to_vec();
                     self.filled.push(rect);
                 }
                 self.pending = None;
@@ -54,22 +73,35 @@ impl Containers {
     }
 
     /// The panels that hold `rect`'s centre and are taller than it. A highlight or inline shading
-    /// drawn to the height of its glyphs is not a panel.
-    pub(super) fn membership(&self, rect: [f64; 4]) -> Vec<usize> {
+    /// drawn to the height of its glyphs is not a panel, and neither is a fill painted after the
+    /// text (a redaction cover): `at` is the text's place in the drawing order, the operator
+    /// indices from the page down through the forms that draw it.
+    pub(super) fn membership(&self, rect: [f64; 4], at: &[usize]) -> Vec<usize> {
         let (x, y) = ((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
-        self.filled
+        let mut ids: Vec<usize> = self
+            .filled
             .iter()
-            .enumerate()
-            .filter_map(|(index, container)| {
+            .filter_map(|container| {
                 let ys =
                     [(rect[0], rect[1]), (rect[2], rect[1]), (rect[0], rect[3]), (rect[2], rect[3])].map(|(x, y)| container.inverse.apply(x, y).1);
                 let height = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) - ys.iter().copied().fold(f64::INFINITY, f64::min);
                 let (x, y) = container.inverse.apply(x, y);
                 let [left, bottom, right, top] = container.rect;
-                (x >= left && x <= right && y >= bottom && y <= top && top - bottom >= height * 1.15).then_some(index)
+                (container.at.as_slice() < at && x >= left && x <= right && y >= bottom && y <= top && top - bottom >= height * 1.15)
+                    .then_some(container.id)
             })
-            .collect()
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
+}
+
+fn page_box([left, bottom, right, top]: [f64; 4], ctm: Matrix) -> [f64; 4] {
+    let corners = [(left, bottom), (right, bottom), (left, top), (right, top)].map(|(x, y)| ctm.apply(x, y));
+    corners.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |[x0, y0, x1, y1], &(x, y)| {
+        [x0.min(x), y0.min(y), x1.max(x), y1.max(y)]
+    })
 }
 
 struct Collector<'a> {
@@ -80,12 +112,13 @@ struct Collector<'a> {
 }
 
 impl Collector<'_> {
-    fn walk(&mut self, ops: &[Op], resources: &Dict, initial: Matrix) {
+    fn walk(&mut self, ops: &[Op], resources: &Dict, initial: Matrix, prefix: &[usize]) {
         let mut local = Containers::default();
         let mut ctm = initial;
         let mut stack = Vec::new();
-        for op in ops {
-            local.observe(op, ctm);
+        for (i, op) in ops.iter().enumerate() {
+            let at = [prefix, &[i]].concat();
+            local.observe(op, ctm, &at);
             match op.op.as_slice() {
                 b"q" => stack.push(ctm),
                 b"Q" => {
@@ -105,7 +138,7 @@ impl Collector<'_> {
                         if let Some(obj) = form.obj {
                             self.path.push(obj);
                         }
-                        self.walk(&pdfcraft_content::parse(&form.data).ops, &form.resources, form.ctm);
+                        self.walk(&pdfcraft_content::parse(&form.data).ops, &form.resources, form.ctm, &at);
                         if form.obj.is_some() {
                             self.path.pop();
                         }
