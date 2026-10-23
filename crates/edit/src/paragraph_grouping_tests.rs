@@ -173,6 +173,23 @@ fn joins_rows_when_their_panel_is_repainted_behind_each_row() {
 }
 
 #[test]
+fn joins_rows_when_an_edit_wraps_a_fallback_word_onto_its_own_row() {
+    // The bundled Inter face draws the Cyrillic Helvetica lacks; wrapped alone onto a row, the
+    // word is still part of the paragraph that was edited.
+    let mut doc = page(
+        "BT /F1 12 Tf 14.4 TL 72 700 Td (The quick brown fox jumps over the lazy dog) Tj T* (and keeps running through the long field.) Tj ET",
+        "Helvetica",
+    );
+    let edited = "The quick brown fox jumps over the lazy dog \u{049b}\u{0438}\u{0437}\u{0438}\u{043b}\nand keeps running through the long field.";
+    text::rewrite_block(&mut doc, 0, 0, Some(edited), &text::BlockStyle::default()).unwrap();
+
+    let blocks = text::text_blocks(&reopen(&doc), 0).unwrap();
+
+    assert_eq!(blocks.len(), 1, "{:?}", blocks.iter().map(|b| &b.editor_text).collect::<Vec<_>>());
+    assert!(blocks[0].rows.len() > 2, "the word wraps onto a row of its own: {:?}", blocks[0].editor_text);
+}
+
+#[test]
 fn joins_plain_multiline_when_no_container_exists() {
     let doc = page("BT /F1 12 Tf 72 700 Td (First) Tj 0 -18 Td (Second) Tj ET", "Helvetica");
 
