@@ -104,6 +104,14 @@ fn page_box([left, bottom, right, top]: [f64; 4], ctm: Matrix) -> [f64; 4] {
     })
 }
 
+impl Containers {
+    /// Whether panel `id` (from [`Containers::membership`]) is no more than a padded highlight
+    /// around `rect`: under 1.75 times its height on the page.
+    pub(super) fn hugs(&self, id: usize, rect: [f64; 4]) -> bool {
+        self.filled.get(id).is_some_and(|panel| panel.page[3] - panel.page[1] < (rect[3] - rect[1]) * 1.75)
+    }
+}
+
 struct Collector<'a> {
     doc: &'a Document,
     containers: Containers,
