@@ -239,6 +239,21 @@ fn joins_rows_when_a_highlight_hugs_one_word() {
 }
 
 #[test]
+fn joins_rows_when_a_padded_highlight_surrounds_one_word() {
+    // Highlighters pad the box past the glyphs; it is still a highlight, not a panel.
+    for padded in ["98 695 36 16 re", "98 694 36 18 re", "96 693 40 20 re"] {
+        let doc = page(
+            &format!("q 1 1 0 rg {padded} f Q BT /F1 12 Tf 72 700 Td (Plain ) Tj (word) Tj ( rest) Tj 0 -18 Td (Second row) Tj ET"),
+            "Helvetica",
+        );
+
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+
+        assert_eq!(blocks.iter().map(|b| b.editor_text.as_str()).collect::<Vec<_>>(), ["Plain word rest\nSecond row"], "{padded}");
+    }
+}
+
+#[test]
 fn joins_rows_when_only_right_edges_align() {
     let doc = page("BT /F1 12 Tf 72 700 Td (Long first row) Tj ET BT /F1 12 Tf 300 682 Td (Short) Tj ET", "Helvetica");
     let lines = text::text_lines(&doc, 0).unwrap();

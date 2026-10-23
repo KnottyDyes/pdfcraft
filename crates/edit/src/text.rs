@@ -1315,7 +1315,34 @@ fn interpret(
     for shown in &mut out {
         shown.containers = carry.containers.membership(shown.rect, &[carry.at.as_slice(), &[shown.op]].concat());
     }
+    // Text that runs on along its line keeps a box only part of it is in when the box is a
+    // panel's height: a highlight padded around one word of the line is not a panel.
+    let mut start = 0;
+    while start < out.len() {
+        let mut end = start + 1;
+        while out.get(end).is_some_and(|next| runs_on(&out[end - 1].rect, &next.rect)) {
+            end += 1;
+        }
+        if end - start > 1 {
+            let run = &out[start..end];
+            let partial: Vec<usize> =
+                run.iter().flat_map(|s| s.containers.iter().copied()).filter(|panel| !run.iter().all(|s| s.containers.contains(panel))).collect();
+            for shown in &mut out[start..end] {
+                let rect = shown.rect;
+                shown.containers.retain(|panel| !partial.contains(panel) || !carry.containers.hugs(*panel, rect));
+            }
+        }
+        start = end;
+    }
     Ok(out)
+}
+
+/// Whether text in `next` continues `previous` along its line: about the same height across it,
+/// and starting at or after it with less than a line's height between them.
+fn runs_on(previous: &[f64; 4], next: &[f64; 4]) -> bool {
+    let height = (previous[3] - previous[1]).max(next[3] - next[1]);
+    let centre = |r: &[f64; 4]| (r[1] + r[3]) / 2.0;
+    (centre(previous) - centre(next)).abs() < height / 2.0 && next[0] >= previous[0] && next[0] - previous[2] < height
 }
 
 /// The lines of text on a page (0-based), in content order.
