@@ -1324,12 +1324,17 @@ fn interpret(
             end += 1;
         }
         if end - start > 1 {
-            let run = &out[start..end];
-            let partial: Vec<usize> =
-                run.iter().flat_map(|s| s.containers.iter().copied()).filter(|panel| !run.iter().all(|s| s.containers.contains(panel))).collect();
+            // How many of the run's pieces each box holds (`membership` lists a box once per piece),
+            // counted in one pass: a hostile page can chain thousands of runs into one line.
+            let mut held: HashMap<usize, usize> = HashMap::new();
+            for shown in &out[start..end] {
+                for panel in &shown.containers {
+                    *held.entry(*panel).or_default() += 1;
+                }
+            }
             for shown in &mut out[start..end] {
                 let rect = shown.rect;
-                shown.containers.retain(|panel| !partial.contains(panel) || !carry.containers.hugs(*panel, rect));
+                shown.containers.retain(|panel| held.get(panel) == Some(&(end - start)) || !carry.containers.hugs(*panel, rect));
             }
         }
         start = end;
