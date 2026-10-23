@@ -254,6 +254,16 @@ fn joins_rows_when_a_padded_highlight_surrounds_one_word() {
 }
 
 #[test]
+fn joins_rows_when_a_padded_highlight_sits_inside_a_one_run_line() {
+    // One `Tj` draws the whole line, so the highlight's word is not a run of its own.
+    let doc = page("q 1 1 0 rg 98 695 36 16 re f Q BT /F1 12 Tf 72 700 Td (Plain word rest) Tj 0 -18 Td (Second row) Tj ET", "Helvetica");
+
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+
+    assert_eq!(blocks.iter().map(|b| b.editor_text.as_str()).collect::<Vec<_>>(), ["Plain word rest\nSecond row"]);
+}
+
+#[test]
 fn joins_rows_when_only_right_edges_align() {
     let doc = page("BT /F1 12 Tf 72 700 Td (Long first row) Tj ET BT /F1 12 Tf 300 682 Td (Short) Tj ET", "Helvetica");
     let lines = text::text_lines(&doc, 0).unwrap();

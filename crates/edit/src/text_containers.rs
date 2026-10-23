@@ -110,6 +110,12 @@ impl Containers {
     pub(super) fn hugs(&self, id: usize, rect: [f64; 4]) -> bool {
         self.filled.get(id).is_some_and(|panel| panel.page[3] - panel.page[1] < (rect[3] - rect[1]) * 1.75)
     }
+
+    /// Whether panel `id` reaches across `rect` from its left edge to its right one on the page.
+    pub(super) fn spans(&self, id: usize, rect: [f64; 4]) -> bool {
+        let tolerance = (rect[3] - rect[1]) * 0.25;
+        self.filled.get(id).is_some_and(|panel| panel.page[0] <= rect[0] + tolerance && panel.page[2] >= rect[2] - tolerance)
+    }
 }
 
 struct Collector<'a> {
